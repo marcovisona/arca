@@ -218,4 +218,34 @@ import Testing
         let paths = Set(try await archive.snapshot().entries.map(\.path))
         #expect(paths == ["tree", "tree/x.txt", "tree/sub", "tree/sub/y.txt"])
     }
+
+    @Test func preservesUnicodeFilenamesAcrossListingExtractionAndRename() async throws {
+        let s = try Scratch()
+        let archive = try await Archive.create(s.path("unicode.zip"), format: .zip, journal: s.journal)
+        let names = ["café.txt", "🙂.txt", "name with spaces.txt", "東京.txt", "e\u{301}.txt"]
+        let changes = names.map { name in
+            ArchiveChange.addData(Data("contents:\(name)".utf8), at: name)
+        }
+        _ = try await archive.apply(changes)
+
+        let listed = try await archive.snapshot().entries.map(\.path)
+        for name in names {
+            let expectedScalars = name.unicodeScalars.map(\.value)
+            #expect(listed.contains { $0.unicodeScalars.map(\.value) == expectedScalars })
+            #expect(String(decoding: try await archive.data(for: name), as: UTF8.self) == "contents:\(name)")
+        }
+
+        let out = s.path("extracted")
+        _ = try await archive.extract([], to: out)
+        let extractedFiles = try FileManager.default.contentsOfDirectory(at: out, includingPropertiesForKeys: nil)
+        #expect(Set(try extractedFiles.map { String(decoding: try Data(contentsOf: $0), as: UTF8.self) }) ==
+                Set(names.map { "contents:\($0)" }))
+
+        _ = try await archive.apply([.rename(from: "東京.txt", to: "東京-renamed.txt")])
+        let renamed = try await archive.snapshot().entries.map(\.path)
+        #expect(renamed.contains("東京-renamed.txt"))
+        #expect(!renamed.contains("東京.txt"))
+        #expect(String(decoding: try await archive.data(for: "東京-renamed.txt"), as: UTF8.self) == "contents:東京.txt")
+    }
+
 }
